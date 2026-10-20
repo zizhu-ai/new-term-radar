@@ -9,7 +9,9 @@ hf_new   models that entered Hugging Face's trending top HF_TOP since the last r
 """
 from __future__ import annotations
 
+import glob
 import json
+import os
 import re
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -26,6 +28,67 @@ X_MIN_LIKES = 100            # a name only one account used needs this much atte
 PER_POST = 3                 # and must look like a name; one post yields at most this many
 HF_TOP, HF_FETCH = 50, 100   # entering the top 50 against the last run's top 100
 TOP = 25
+
+
+
+X_META_KEYS = {"missing_accounts", "fetched_at", "partial", "since_ids"}
+
+
+def load_x_posts(max_age_hours: float | None = None) -> dict | None:
+    """Shared X dump for sources + usecases evidence.
+
+    Prefers `X_POSTS_GLOB` (e.g. `out/x_posts-*.json`): every matching file whose mtime is
+    within the last `max_age_hours` (default LOOKBACK_HOURS) is merged. Tweets are unioned
+    per account by url (else text); a later shard wins on the same key. Top-level meta keys
+    (`missing_accounts`, …) are taken from the newest shard.
+
+    Falls back to a single `X_POSTS_FILE`. Returns None when neither is set / nothing readable,
+    so callers can use AIsa.
+    """
+    age = LOOKBACK_HOURS if max_age_hours is None else max_age_hours
+    cutoff = datetime.now(timezone.utc).timestamp() - age * 3600
+    pattern = (os.environ.get("X_POSTS_GLOB") or "").strip()
+    paths: list[Path] = []
+    if pattern:
+        paths = sorted((Path(p) for p in glob.glob(pattern) if Path(p).is_file() and Path(p).stat().st_mtime >= cutoff),
+                       key=lambda p: p.stat().st_mtime)
+    if not paths:
+        one = (os.environ.get("X_POSTS_FILE") or "").strip()
+        if one and Path(one).exists():
+            paths = [Path(one)]
+    if not paths:
+        return None
+
+    merged: dict = {}
+    meta: dict = {}
+    for path in paths:
+        try:
+            raw = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        for k, v in raw.items():
+            if k in X_META_KEYS or k.startswith("_"):
+                meta[k] = v
+                continue
+            if not isinstance(v, dict):
+                continue
+            bucket = merged.setdefault(k, {"data": {"tweets": []}})
+            seen = {((t.get("url") or "").strip() or (t.get("text") or "").strip()): i
+                    for i, t in enumerate(bucket["data"]["tweets"])}
+            for tw in (v.get("data") or {}).get("tweets") or []:
+                key = ((tw.get("url") or "").strip() or (tw.get("text") or "").strip())
+                if not key:
+                    continue
+                if key in seen:
+                    bucket["data"]["tweets"][seen[key]] = tw
+                else:
+                    seen[key] = len(bucket["data"]["tweets"])
+                    bucket["data"]["tweets"].append(tw)
+    if meta:
+        merged.update(meta)
+    return merged
 
 
 def accounts(cfg: dict) -> list[str]:
@@ -86,11 +149,23 @@ def x_new(cfg: dict, state: Path) -> dict:
     handles = accounts(cfg)
     if not handles:
         return {"skipped": True}
-    data, cost = aisa.call_all([{"call_id": h, "tool": "get_twitter_user_last_tweets", "arguments": {"userName": h}}
-                                for h in handles])
+    shared = load_x_posts()
+    missing: list[str] = []
+    if shared is not None:
+        # box / shared-X: posts fetched once (x MCP), already in AIsa's shape
+        data, cost = shared, 0
+        missing = list(data.get("missing_accounts") or [])
+    else:
+        data, cost = aisa.call_all([{"call_id": h, "tool": "get_twitter_user_last_tweets", "arguments": {"userName": h}}
+                                    for h in handles])
     posts = []
+    answered = 0
     for h in handles:
-        for tw in ((data.get(h) or {}).get("data") or {}).get("tweets") or []:
+        tweets = ((data.get(h) or {}).get("data") or {}).get("tweets")
+        if tweets is None and h not in data:
+            continue
+        answered += 1
+        for tw in tweets or []:
             posts.append({"account": h, "text": tw.get("text") or "", "likes": int(tw.get("likeCount") or 0),
                           "url": tw.get("url", ""), "created": _posted(tw)})
     path = state / "x_vocab.json.gz"
@@ -106,8 +181,11 @@ def x_new(cfg: dict, state: Path) -> dict:
             vocab[term] = today
     if posts:   # a failed fetch keeps yesterday's vocabulary
         snap.save(path, {term: d for term, d in vocab.items() if d >= cutoff})
-    return {"accounts": len(handles), "answered": len(data), "posts": len(posts), "cost_micros": cost,
-            "first_run": first_run, "terms": rows}
+    out = {"accounts": len(handles), "answered": answered, "posts": len(posts), "cost_micros": cost,
+           "first_run": first_run, "terms": rows}
+    if missing:
+        out["missing_accounts"] = missing
+    return out
 
 
 _HF_NOISE = re.compile(r"[-_.](gguf|ggml|awq|gptq|fp8|fp16|bf16|int[48]|mlx|exl2|onnx|uncensored|abliterated|"

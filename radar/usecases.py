@@ -112,32 +112,71 @@ def _readme(repo: str) -> str:
         return ""
 
 
+def _site_text(name: str) -> str:
+    """box patch: when NEW_SITES_FILE is set, use the Columbus row + a free homepage scrape."""
+    f = os.environ.get("NEW_SITES_FILE")
+    if not f or not Path(f).exists():
+        return ""
+    t0 = Path(f).read_text()
+    rows = json.loads(t0[t0.index("{"):t0.rindex("}") + 1]).get("rows") or []
+    hit = next((r for r in rows if name.lower() in r["domain"].lower()), None)
+    if not hit:
+        return ""
+    txt = f"Site {hit['domain']} ({hit.get('categoryEn') or ''}): {hit.get('oneLiner') or ''}\n"
+    try:
+        req = urllib.request.Request(f"https://{hit['domain']}/", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as res:
+            html = res.read(300000).decode("utf-8", "replace")
+        meta = re.findall(
+            r'<title[^>]*>(.*?)</title>|<meta[^>]+(?:name|property)="(?:description|og:description)"[^>]+content="([^"]*)"|<h[12][^>]*>(.*?)</h[12]>',
+            html, re.S | re.I)
+        bits = [" ".join(re.sub(r"<[^>]+>", " ", x).split()) for m in meta for x in m if x]
+        txt += "\n".join(dict.fromkeys(b for b in bits if b))[:1500]
+    except (OSError, ValueError):
+        pass
+    return txt
+
+
 def evidence(names: list[str], repos: dict[str, str], today: date,
              texts: dict[str, tuple[str, str]] | None = None) -> tuple[dict[str, dict], int]:
     """{name: {"posts": [...], "readme": str, "error": str}} and the cost in micro-USD.
 
-    One request per name: the router runs a batch's calls one after another, a post
-    search takes 15 to 25 seconds, and its gateway gives up at 60, so two names in one
-    request timed out twice on 2026-10-13 while each alone answered. A name whose search
-    fails goes on with its README and the related queries, and the table says so."""
-    since = (today - timedelta(days=SEARCH_DAYS)).isoformat()
+    When X_POSTS_GLOB / X_POSTS_FILE is set (shared pull), evidence comes from those posts
+    (no paid X search). Otherwise one AIsa search per name (upstream behaviour)."""
+    from . import sources as _sources
+    shared = _sources.load_x_posts()
     out, cost = {}, 0
+    allp = []
+    if shared is not None:
+        for h, v in shared.items():
+            if h.startswith("_") or h in _sources.X_META_KEYS:
+                continue
+            for tw in (v.get("data") or {}).get("tweets") or []:
+                allp.append(dict(tw, author={"userName": h}))
     for n in names:
         error, tweets = "", []
-        try:
-            data, spent = aisa.call([{"call_id": "s", "tool": SEARCH_TOOL, "arguments": {
-                "query": f'"{n}" min_faves:{MIN_FAVES} -filter:replies since:{since}', "queryType": "Top"}}])
-            cost += spent
-            d = data.get("s") or {}
-            tweets = d.get("tweets") or (d.get("data") or {}).get("tweets") or []
-        except aisa.AisaError as exc:
-            error = " ".join(re.sub(r"<[^>]+>", " ", str(exc)).split())[:80]
+        if shared is not None:
+            tweets = [tw for tw in allp if n.lower() in (tw.get("text") or "").lower()]
+        else:
+            since = (today - timedelta(days=SEARCH_DAYS)).isoformat()
+            try:
+                data, spent = aisa.call([{"call_id": "s", "tool": SEARCH_TOOL, "arguments": {
+                    "query": f'"{n}" min_faves:{MIN_FAVES} -filter:replies since:{since}', "queryType": "Top"}}])
+                cost += spent
+                d = data.get("s") or {}
+                tweets = d.get("tweets") or (d.get("data") or {}).get("tweets") or []
+            except aisa.AisaError as exc:
+                error = " ".join(re.sub(r"<[^>]+>", " ", str(exc)).split())[:80]
         posts = sorted(({"text": " ".join((t.get("text") or "").split()), "likes": int(t.get("likeCount") or 0),
                          "by": (t.get("author") or {}).get("userName") or "?", "url": t.get("url", "")} for t in tweets),
                        key=lambda p: -p["likes"])[:POSTS_KEPT]
-        out[n] = {"posts": posts, "readme": _readme(repos[n]) if repos.get(n) else "", "repo": repos.get(n, ""), "error": error}
-        if not out[n]["readme"] and (texts or {}).get(n):     # a product's own listing stands in for a README
-            out[n]["repo"], out[n]["readme"] = texts[n]
+        readme = _readme(repos[n]) if repos.get(n) else ""
+        repo = repos.get(n, "")
+        if not readme and (texts or {}).get(n):
+            repo, readme = texts[n]
+        if not posts and not readme:
+            readme = _site_text(n)
+        out[n] = {"posts": posts, "readme": readme, "repo": repo, "error": error}
     return out, cost
 
 
@@ -270,13 +309,15 @@ def volumes(phrases: list[str], location_code: int) -> tuple[dict[str, dict], in
     """{phrase: {"volume", "month"}} from Google Ads, one batch call."""
     if not phrases:
         return {}, 0
-    data, cost = aisa.call([{"call_id": "vol", "tool": VOLUME_TOOL, "arguments": {"body": [{
-        "keywords": phrases, "location_code": location_code, "language_code": "en"}]}}])
-    out = {}
-    for r in ((data.get("vol") or {}).get("tasks") or [{}])[0].get("result") or []:
-        ms = r.get("monthly_searches") or []
-        out[r["keyword"]] = {"volume": int(r.get("search_volume") or 0),
-                             "month": f"{ms[0]['year']}-{ms[0]['month']:02d}" if ms else ""}
+    # box patch: GoAnyAPI keyword-search-volume (3 credits each, capped)
+    out, cost = {}, 0
+    for p in phrases[:int(os.environ.get("RADAR_MAX_VOLUME", "25"))]:
+        try:
+            v, c = goanyapi.volume(p)
+        except goanyapi.GoAnyError:
+            continue
+        out[p] = v
+        cost += c
     return out, cost
 
 
@@ -436,23 +477,68 @@ def _pairs(task: dict) -> list[tuple[date, int, int]]:
 
 def fetch_series(keywords: list[str], benchmark: str, today: date) -> tuple[dict[str, dict], int]:
     """{keyword: {"solo": [(day, value)], "pair": [(day, value, benchmark value)]}}: two Trends lookups each."""
-    window = {"date_from": (today - timedelta(days=TRENDS_DAYS)).isoformat(), "date_to": today.isoformat()}
-    calls = []
-    for i, k in enumerate(keywords):
-        calls.append({"call_id": f"s{i}", "tool": review.TOOL, "arguments": {"body": [{"keywords": [k], **window}]}})
-        calls.append({"call_id": f"p{i}", "tool": review.TOOL, "arguments": {"body": [{"keywords": [k, benchmark], **window}]}})
-    data, cost = aisa.call_all(calls)
-    task = lambda cid: ((data.get(cid) or {}).get("tasks") or [{}])[0]  # noqa: E731
-    return {k: {"solo": review._series(task(f"s{i}")), "pair": _pairs(task(f"p{i}"))} for i, k in enumerate(keywords)}, cost
+    # box patch: one GoAnyAPI Trends call per keyword (keyword + benchmark, 90 days, worldwide);
+    # the solo series is the keyword's own column rescaled to 0-100.
+    window = "today 3-m"   # GoAnyAPI only takes fixed windows
+    out, cost = {}, 0
+    for k in keywords:
+        try:
+            pts, c = goanyapi.trends([k, benchmark], window)
+        except goanyapi.GoAnyError:
+            pts, c = [], 0
+        cost += c
+        top = max((p[1] for p in pts), default=0)
+        out[k] = {"pair": [(d, a, b) for d, a, b in pts],
+                  "solo": [(d, round(a * 100 / top)) for d, a, b in pts] if top else []}
+    return out, cost
+
+
+BENCH_CACHE_DAYS = 30
+
+
+def bench_volume(state: Path, bench: str, today: date) -> tuple[dict, int]:
+    """box patch: the benchmark's own Google Ads volume ({"volume", "month"}), cached in the
+    state directory for BENCH_CACHE_DAYS (3 GoAnyAPI credits per refresh)."""
+    path = state / "bench_volume.json.gz"
+    cache = snap.load(path) or {}
+    hit = cache.get(bench)
+    if hit and hit.get("fetched", "") >= (today - timedelta(days=BENCH_CACHE_DAYS)).isoformat() and hit.get("volume"):
+        return hit, 0
+    if not goanyapi.key():
+        return hit or {}, 0
+    try:
+        v, cost = goanyapi.volume(bench)
+    except goanyapi.GoAnyError:
+        return hit or {}, 0
+    if v.get("volume"):
+        cache[bench] = dict(v, fetched=today.isoformat())
+        snap.save(path, cache)
+    return v, cost
+
+
+def bench_own_daily(rows: list[dict], bench_vol: dict | None, today: date) -> float | None:
+    """box patch: when no term is big enough to calibrate the benchmark (bench_daily()),
+    size it from its own Google Ads volume along its own curve: the benchmark column of the
+    keyword+benchmark Trends pairs, normalised per pair, then the median over the pairs."""
+    if not bench_vol or not bench_vol.get("volume") or not bench_vol.get("month"):
+        return None
+    found = []
+    for r in rows:
+        pair = review.settled(r.get("_pair") or [], today)
+        anchor = _mean([b for d, _, b in pair if _in_month(d, bench_vol["month"])])
+        recent = _mean([b for _, _, b in pair[-RECENT_DAYS:]])
+        if anchor and recent:
+            found.append(bench_vol["volume"] / 30 * recent / anchor)
+    return statistics.median(found) if found else None
 
 
 def measure(rows: list[dict], series: dict[str, dict], min_daily: int, today: date,
-            country: dict[str, list] | None = None) -> float | None:
+            country: dict[str, list] | None = None, bench_vol: dict | None = None) -> float | None:
     """Fills each row with its shape, size and decision. Returns the benchmark's calibrated
     size. A row with a one-country series takes its shape from that (`trend_geo` says so)."""
     for r in rows:
         r["_pair"] = series.get(r["phrase"], {}).get("pair") or []
-    daily = bench_daily(rows)
+    daily = bench_daily(rows) or bench_own_daily(rows, bench_vol, today)
     for r in rows:
         solo = series.get(r["phrase"], {}).get("solo") or []
         local = (country or {}).get(r["phrase"])
@@ -516,8 +602,10 @@ def run(cfg: dict, state: Path, names: list[str], repos: dict[str, str], today: 
     rows = [{"term": n, "phrase": n, "kind": "name", "names": [], "brand": True, "evidence": "", **vol.get(n, {})} for n in todo] + generic
     series, c3 = fetch_series([r["phrase"] for r in rows], bench, today)
     local, c4, local_errors = country_series(rows, c) if goanyapi.key() and c.get("country_trends", True) else ({}, 0, [])
-    daily = measure(rows, series, c["min_daily"], today, local)
-    c5, comp_errors = competition.assess(rows, cfg, state) if cfg.get("competition", {}).get("max_rows") else (0, [])
+    bvol, c5a = bench_volume(state, bench, today)
+    daily = measure(rows, series, c["min_daily"], today, local, bvol)
+    c5b, comp_errors = competition.assess(rows, cfg, state) if cfg.get("competition", {}).get("max_rows") else (0, [])
+    c5 = c5a + c5b
     order = {"prioritize": 0, "watch": 1, "skip": 2}
     rows.sort(key=lambda r: (order[r["decision"]], -(r.get("per_day") or 0), -(r.get("volume") or 0)))
     if not on_request:

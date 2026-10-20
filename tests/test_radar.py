@@ -368,12 +368,13 @@ def _write_config(tmp_path, **more):
     return path
 
 
-def test_sources_run_writes_no_report_when_nothing_is_new(tmp_path, monkeypatch):
+def test_sources_run_writes_quiet_out_when_nothing_is_new(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.sources, "x_new", lambda cfg, state: {"posts": 400, "terms": []})
     monkeypatch.setattr(cli.sources, "hf_new", lambda cfg, state: {"models": 100, "terms": []})
     out = tmp_path / "sources.md"
     assert cli.main(["sources", "--config", str(_write_config(tmp_path)), "--state", str(tmp_path / "s"), "--out", str(out)]) == 0
-    assert not out.exists()
+    # P1: always write --out; quiet run has no named-lead report body, only the quiet line (+ credits)
+    assert out.exists() and "qwen" not in out.read_text().lower()
 
 
 def test_sources_run_reports_and_keeps_a_new_name(tmp_path, monkeypatch):

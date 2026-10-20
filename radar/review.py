@@ -95,6 +95,29 @@ def review(cfg: dict, conn: sqlite3.Connection, today: date | None = None) -> di
     due = store.due(conn, today, c["after_days"], c["per_day"])
     if not due:
         return {"checked": [], "cost_micros": 0, "after_days": c["after_days"]}
+    from . import goanyapi
+    if goanyapi.key():
+        # box patch: GoAnyAPI Trends when GOANYAPI_API_KEY is set
+        cost, checked = 0, []
+        for term, first_seen, variants in due:
+            keys = (list(variants) or [term])[:MAX_VARIANTS]
+            lo, hi = first_seen - timedelta(days=BEFORE_DAYS), min(first_seen + timedelta(days=c['after_days']), today)
+            window = "today 1-m" if (today - lo).days <= 30 else "today 3-m"
+            per, ok = {}, True
+            for k in keys:
+                try:
+                    pts, cc = goanyapi.trends([k], window)
+                except goanyapi.GoAnyError:
+                    ok = False
+                    break
+                cost += cc
+                per[k] = rose(settled([(d, v) for d, v in pts if lo <= d <= hi], today), first_seen)
+            if not ok:
+                continue   # stays due
+            v, lead = verdict(per, first_seen)
+            store.save_verdict(conn, term, v, lead, per, today)
+            checked.append({"term": term, "first_seen": first_seen.isoformat(), "verdict": v, "lead_days": lead})
+        return {"checked": checked, "cost_micros": cost, "after_days": c["after_days"]}
     calls, plan = plan_calls(due, today, c["after_days"])
     data, cost = aisa.call_all(calls)
     checked = []

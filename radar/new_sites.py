@@ -60,13 +60,29 @@ def _calls(c: dict, today: date) -> list[dict]:
 def new_sites(cfg: dict, state: Path, today: date | None = None) -> dict:
     c = cfg["new_sites"]
     today = today or date.today()
-    data, cost = aisa.call_all(_calls(c, today))
+    import json, os
+    f = (os.environ.get("NEW_SITES_FILE") or "").strip()
     sites: dict[str, dict] = {}
-    for name in c["queries"]:
-        task = ((data.get(name) or {}).get("tasks") or [{}])[0]
-        for item in ((task.get("result") or [{}])[0] or {}).get("items") or []:
-            if keep(item, c["min_etv"], c["min_keywords"]) and item["domain"] not in sites:
-                sites[item["domain"]] = site_row(item, name)
+    if f and Path(f).exists():
+        # box patch: Columbus list_sites dump (free) when NEW_SITES_FILE is set
+        t0 = Path(f).read_text()
+        rows_in = json.loads(t0[t0.index("{"):t0.rindex("}") + 1]).get("rows") or []
+        data, cost = {"columbus": True}, 0
+        since = (today - timedelta(days=c["window_days"] * 2)).isoformat()
+        for name, pattern in c["queries"].items():
+            needle = pattern.strip("%").lower()
+            for it in rows_in:
+                d = it["domain"].lower()
+                if needle in d and (it.get("registDate") or "") >= since and (it.get("estOrganic") or 0) > c["min_etv"] and d not in sites:
+                    sites[d] = {"domain": d, "query": name, "created": it.get("registDate") or "", "first_seen": "",
+                                "etv": int(it.get("estOrganic") or 0), "keywords": int(it.get("visits") or 0)}
+    else:
+        data, cost = aisa.call_all(_calls(c, today))
+        for name in c["queries"]:
+            task = ((data.get(name) or {}).get("tasks") or [{}])[0]
+            for item in ((task.get("result") or [{}])[0] or {}).get("items") or []:
+                if keep(item, c["min_etv"], c["min_keywords"]) and item["domain"] not in sites:
+                    sites[item["domain"]] = site_row(item, name)
     path = state / "new_sites.json.gz"
     seen: dict[str, str] = snap.load(path) or {}
     rows = sorted(sites.values(), key=lambda r: -r["etv"])

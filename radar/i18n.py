@@ -56,7 +56,7 @@ T = {
     "note_hf_copies": (", {n} versions", ",{n} 个版本"),
     "note_breakout": ("GitHub breakout {repo} ★{stars} ({velocity}/day{gain})", "GitHub 爆发 {repo} ★{stars}(均 {velocity}/天{gain})"),
     "note_breakout_gain": (", +{delta} in a day", ",一天 +{delta}"),
-    "note_site": ("New site {domain} (registered {created}, ~{etv} visits/mo, {keywords} ranking keywords)",
+    "note_site": ("New site {domain} (registered {created}, ~{etv} organic visits/mo, {keywords} total visits/mo, via Columbus)",
                   "新站 {domain}(注册 {created},约 {etv} 访问/月,{keywords} 个排名词)"),
     "note_surge": ("{label}: {n} places (×{lift})", "{label} {n} 处 (×{lift})"),
     # signal labels, earliest first

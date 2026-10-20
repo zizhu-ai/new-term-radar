@@ -24,8 +24,8 @@ Signals:
 $0.09 a call for the volume lookup). `leads` lists what the radar has kept, with the
 review's verdicts and the hit rate per signal; it costs nothing.
 
-`sources` runs only ① (they change by the hour) and writes a report only when there is a
-name or an error. `daily` runs everything; give it `--skip x,hf` when `sources` runs
+`sources` runs only ① (they change by the hour). It always writes `--out` when set; it
+mails only when there is a named lead (errors alone stay silent, exit non-zero). `daily` runs everything; give it `--skip x,hf` when `sources` runs
 apart, and it lists the ① leads of the last day from the database instead.
 
 A small model scores every term: the name of a specific new thing, or a common word?
@@ -39,7 +39,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import asks, breakout, config, gsc, new_sites, notify, pains, report, review, revenue, sitemaps, sources, store, usecases
+from . import asks, breakout, config, gsc, new_sites, notify, pains, report, review, revenue, sitemaps, snap, sources, store, usecases
 from .i18n import t
 
 SKIPPABLE = {"x", "hf", "breakout", "sitemaps", "newsites", "revenue", "asks", "gsc", "review", "judge", "usecases", "tutorials"}
@@ -55,29 +55,63 @@ def run(fn, skip: bool = False) -> dict:
         return {"error": f"{type(exc).__name__}: {' '.join(str(exc).split())[:160]}"}
 
 
-def _finish(args, text: str, subject: str) -> None:
+def _finish(args, text: str, subject: str, *, mail: bool | None = None) -> None:
+    """Write --out, print, optionally mail. `mail=False` skips notify even when --mail is set
+    (sources: errors with no named leads stay silent)."""
+    from . import goanyapi
+    cr = goanyapi.SPENT["credits"]
+    text += f"\n- GoAnyAPI credits this run: {cr} (≈${cr/1000:.3f})\n"
+    Path("out").mkdir(parents=True, exist_ok=True)
+    with open("out/credits.log", "a") as fh:
+        fh.write(f"{date.today()} {args.command} goanyapi_credits={cr}\n")
     if args.out:
         Path(args.out).write_text(text)
     print(text)
-    if args.mail:
+    do_mail = args.mail if mail is None else mail
+    if do_mail:
         print(notify.send(subject, text))
 
 
+def _judged_leads(cfg: dict, blocks: dict) -> tuple[list[dict], dict]:
+    """box patch: the signals' snapshots (what counts as "seen") are written only after the
+    name judge scored the terms. A judge failure or crash keeps yesterday's state, so the
+    same terms come back next run instead of being silently skipped."""
+    try:
+        lead, judged = report.leads(cfg, blocks)
+    except BaseException:
+        snap.discard()
+        raise
+    if judged.get("error") and lead:
+        held = snap.discard()
+        judged["error"] += f" (judge failed: {held} state snapshot(s) not saved; these terms will be re-checked next run)"
+    else:
+        snap.commit()
+    return lead, judged
+
+
 def cmd_sources(args, cfg: dict, state: Path) -> int:
+    """Fast line (①). Always writes --out when set. Mails only when there is a named lead;
+    errors with no named leads stay silent (still exit non-zero)."""
+    snap.defer()
     blocks = {"x": run(lambda: sources.x_new(cfg, state), "x" in args.skip),
               "hf": run(lambda: sources.hf_new(cfg, state), "hf" in args.skip)}
-    lead, judged = report.leads(cfg, blocks)
+    lead, judged = _judged_leads(cfg, blocks)
     conn = store.connect(state)
     extra = {"judge": judged, "record": run(lambda: {"recorded": store.record(conn, report.to_record(cfg, lead))})}
     errors = any(b.get("error") for b in (*blocks.values(), *extra.values()))
-    if report.named(cfg, lead) or errors:
-        _finish(args, report.sources(cfg, lead, blocks, extra), f"New-term radar · sources {date.today()}")
+    named = report.named(cfg, lead)
+    if named or errors:
+        text = report.sources(cfg, lead, blocks, extra)
     else:
-        print(t("sources_quiet") + "; ".join(f"{k} {v.get('posts', v.get('models', t('dash')))}" for k, v in blocks.items()))
-    return 0
+        text = t("sources_quiet") + "; ".join(
+            f"{k} {v.get('posts', v.get('models', t('dash')))}" for k, v in blocks.items())
+    # Notify only on named leads — not on error-only runs (P1 shared-X / less noise).
+    _finish(args, text, f"New-term radar · sources {date.today()}", mail=bool(args.mail and named))
+    return 1 if errors else 0
 
 
 def cmd_daily(args, cfg: dict, state: Path) -> int:
+    snap.defer()
     weekly = args.new_sites or date.today().weekday() == cfg["new_sites"]["weekday"]
     blocks = {
         "x": run(lambda: sources.x_new(cfg, state), "x" in args.skip),
@@ -91,7 +125,7 @@ def cmd_daily(args, cfg: dict, state: Path) -> int:
             args.asks or date.today().weekday() == cfg["asks"]["weekday"])),
     }
     found = run(lambda: gsc.gsc_new(cfg), "gsc" in args.skip)
-    lead, judged = report.leads(cfg, blocks)
+    lead, judged = _judged_leads(cfg, blocks)
     conn = store.connect(state)
     extra = {"judge": judged, "record": run(lambda: {"recorded": store.record(conn, report.to_record(cfg, lead))})}
     # What the viewers of a widely shared walkthrough ask for: the one-click tool behind a ⚡ lead.

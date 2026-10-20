@@ -59,16 +59,27 @@ def call(path: str, **params) -> tuple[dict, int]:
     raise GoAnyError(error[:160])
 
 
+
+SPENT = {"credits": 0}
+
+
+def _c(path, **kw):
+    """Like call(), and add the credits to SPENT (box ops: credits.log / run footer)."""
+    data, cost = call(path, **kw)
+    SPENT["credits"] += cost // MICROS_PER_CREDIT
+    return data, cost
+
+
 def related_queries(term: str, geo: str = "US", window: str = "today 1-m") -> tuple[dict[str, list[str]], int]:
     """{"rising": [...], "top": [...]}: what people searched on Google together with `term`."""
-    data, cost = call("google-trends", q=term, date=window, geo=geo, data_type="RELATED_QUERIES")
+    data, cost = _c("google-trends", q=term, date=window, geo=geo, data_type="RELATED_QUERIES")
     rq = data.get("relatedQueries") or {}
     return {k: [" ".join(str(x.get("query", "")).lower().split()) for x in rq.get(k) or []] for k in ("rising", "top")}, cost
 
 
 def daily_series(term: str, geo: str = "US", window: str = "today 1-m") -> tuple[list[tuple[date, int]], int]:
     """[(day, value)] for `term` in one country, the last month by day."""
-    data, cost = call("google-trends", q=term, date=window, geo=geo, data_type="TIMESERIES")
+    data, cost = _c("google-trends", q=term, date=window, geo=geo, data_type="TIMESERIES")
     out = []
     for p in (data.get("interestOverTime") or {}).get("timeline_data") or []:
         try:
@@ -107,3 +118,29 @@ def chrome_reviews(extension_id: str, cursor: str = "") -> tuple[list[dict], str
     rows = [{"rating": c.get("rating"), "text": " ".join(str(c.get("content") or "").split()), "date": str(c.get("createdAt") or "")[:10]}
             for c in data.get("comments") or []]
     return rows, (data.get("nextCursor") or "") if data.get("hasMore") else "", cost
+
+
+# ---- box patch: GoAnyAPI stands in for AIsa (volume, Trends) ----
+
+def volume(phrase: str) -> tuple[dict, int]:
+    """{"volume", "month"} for the latest month Google Ads reports (3 credits)."""
+    data, cost = _c("keyword-search-volume", keyword=phrase)
+    ms = sorted(data.get("monthlyVolumes") or [], key=lambda m: m["month"], reverse=True)
+    return ({"volume": int(ms[0]["volume"] or 0), "month": ms[0]["month"]} if ms else {"volume": 0, "month": ""}), cost
+
+
+def trends(keywords: list[str], window: str, geo: str = "") -> tuple[list[tuple], int]:
+    """[(day, v1, v2, ...)] worldwide (geo "") daily Trends, 12 credits a call."""
+    kw = {"q": ",".join(keywords), "date": window, "data_type": "TIMESERIES"}
+    if geo:
+        kw["geo"] = geo
+    data, cost = _c("google-trends", **kw)
+    out = []
+    for p in (data.get("interestOverTime") or {}).get("timeline_data") or []:
+        try:
+            day = datetime.fromtimestamp(int(p["timestamp"]), timezone.utc).date()
+            vals = [int(v.get("extracted_value") or 0) for v in p["values"]]
+            out.append((day, *(vals + [0] * (len(keywords) - len(vals)))))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out, cost
