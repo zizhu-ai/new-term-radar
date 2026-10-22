@@ -50,20 +50,43 @@ def page_kind(domain: str, url: str, title: str) -> str:
     return "tool" if TOOL.search(title) or not path else "article"
 
 
-def page_one(keyword: str, location: int) -> tuple[dict, int]:
-    """{"results": [{"domain", "url", "title", "position", "kind"}], "ads", "features"} and the cost."""
-    data, cost = aisa.call([{"call_id": "serp", "tool": SERP_TOOL, "arguments": {"body": [{
-        "keyword": keyword, "location_code": location, "language_code": "en", "depth": 10}]}}])
-    items = (((data.get("serp") or {}).get("tasks") or [{}])[0].get("result") or [{}])[0].get("items") or []
-    results = [{"domain": re.sub(r"^www\.", "", i.get("domain") or ""), "url": i.get("url") or "", "title": i.get("title") or "",
-                "position": i.get("rank_group")} for i in items if i.get("type") == "organic"][:10]
+def _has_aisa() -> bool:
+    try:
+        return bool(aisa.key())
+    except aisa.AisaError:
+        return False
+
+
+SERP_SKIP = {"organic", "ads", "general", "input", "navigation", "pagination"}
+
+
+def _page_one_goany(keyword: str) -> tuple[dict, int]:
+    """Box patch: page one from GoAnyAPI's serp (key already used for ratings) when there is no AIsa key."""
+    try:
+        data, cost = goanyapi._c("serp", q=keyword, gl="US", hl="en")
+    except goanyapi.GoAnyError as exc:
+        raise aisa.AisaError(f"GoAnyAPI serp: {exc}") from exc
+    res = data.get("result") or {}
+    results = []
+    for i, o in enumerate((res.get("organic") or [])[:10], 1):
+        url = o.get("link") or ""
+        dom = re.sub(r"^www\.", "", re.sub(r"^https?://([^/]+).*$", r"\1", url))
+        results.append({"domain": dom, "url": url, "title": o.get("title") or "", "position": o.get("rank") or i})
     for r in results:
         r["kind"] = page_kind(r["domain"], r["url"], r["title"])
-    return {"results": results, "ads": any(i.get("type") == "paid" for i in items),
-            "features": sorted({i["type"] for i in items if i.get("type") not in ("organic", "paid")})}, cost
+    return {"results": results, "ads": bool(res.get("ads")),
+            "features": sorted(k for k, v in res.items() if k not in SERP_SKIP and v)}, cost
+
+
+def page_one(keyword: str, location: int) -> tuple[dict, int]:
+    """{"results": [{"domain", "url", "title", "position", "kind"}], "ads", "features"} and the cost.
+    box: always GoAnyAPI serp (2 credits); AIsa/DataForSEO is not used for page one."""
+    return _page_one_goany(keyword)
 
 
 def difficulty(keywords: list[str], location: int) -> tuple[dict[str, int | None], int]:
+    if not _has_aisa():
+        return {}, 0        # box patch: no AIsa key, difficulty unknown (verdict handles None)
     data, cost = aisa.call([{"call_id": "kd", "tool": KD_TOOL, "arguments": {"body": [{
         "keywords": keywords, "location_code": location, "language_code": "en"}]}}])
     items = ((((data.get("kd") or {}).get("tasks") or [{}])[0].get("result") or [{}])[0].get("items") or [])

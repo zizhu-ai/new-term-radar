@@ -909,7 +909,13 @@ def test_a_crowded_rising_term_is_watched_not_prioritized(cfg, tmp_path, monkeyp
     rated = {"canva.com": 94, "adobe.com": 96, "tiny1.ai": 8, "tiny2.ai": 12, "tiny3.ai": 21}
     asked = []
 
+    serps = {"crowded term": (strong, True), "open term": (strong + weak, False)}   # box: page one comes from GoAnyAPI
+
     def goany(path, **p):
+        if path == "serp":
+            res, ads = serps[p["q"]]
+            return {"result": {"organic": [{"link": u, "title": t, "rank": i} for i, (d, u, t) in enumerate(res, 1)],
+                               **({"ads": [{}]} if ads else {})}}, 2000
         if path == "dr":
             asked.append(p["domain"])
             return {"domain_rating": rated[p["domain"]]}, 2000
@@ -925,7 +931,7 @@ def test_a_crowded_rising_term_is_watched_not_prioritized(cfg, tmp_path, monkeyp
     assert crowded["competition"]["verdict"] == "crowded" and crowded["competition"]["weak"] == 0
     assert opened["decision"] == "prioritize" and opened["competition"]["weak"] == 3
     assert opened["competition"]["weakest"] == {"domain": "tiny1.ai", "dr": 8, "position": 3, "url": "https://tiny1.ai/"}
-    assert "competition" not in faded and errors == [] and cost == 2 * 2000 + 12000 + 5 * 2000 + 2 * (4000 + 4000)
+    assert "competition" not in faded and errors == [] and cost == 2 * 2000 + 5 * 2000 + 2 * (4000 + 4000)
     assert crowded["competition"]["built"] == 19500 and crowded["competition"]["paid"] == ["paid.example"]
     competition.assess([{"phrase": "open term", "decision": "watch"}], cfg, tmp_path)
     assert len(asked) == 5                                    # ratings are kept 30 days, not bought again
@@ -933,8 +939,8 @@ def test_a_crowded_rising_term_is_watched_not_prioritized(cfg, tmp_path, monkeyp
                                        evidence="") for r in rows[:2]],
           "proposed": 2, "relevant": 2, "kept": 2, "benchmark": "gpts", "volume_month": "2026-08", "related": True}
     text = "\n".join(report.keyword_table(cfg, uc))
-    assert "crowded · 0 weak · KD 60 · ads · 19,500 pages built · 1 advertisers" in text and "watch ↓" in text
-    assert "open · 3 weak · KD 25 · 19,500 pages built |" in text and "advertising on it: paid.example" in text
+    assert "crowded · 0 weak · ads · 19,500 pages built · 1 advertisers" in text and "watch ↓" in text
+    assert "open · 3 weak · 19,500 pages built |" in text and "advertising on it: paid.example" in text
     assert "tiny1.ai (rated 8) at #3" in text and "Page one: open = three or more" in text
     assert "**crowded term**: no easy slot, even the weakest, canva.com, is rated 94 (#1)" in text
 
@@ -1086,3 +1092,15 @@ def test_tutorial_asks_only_for_leads_marked_one_click(cfg, monkeypatch):
     assert [x["term"] for x in out["leads"]] == ["opus blender game"] and out["cost_micros"] == 2000 + 1000
     text = "\n".join(report._tutorial_lines(out))
     assert "Too many manual steps (wants a tool, 1) → one click blender export" in text
+
+
+def test_page_one_falls_back_to_goanyapi_without_an_aisa_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("AISA_API_KEY", raising=False)
+    monkeypatch.setattr(competition.aisa.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("GOANYAPI_API_KEY", "k")
+    monkeypatch.setattr(competition.goanyapi, "call", lambda path, **p: ({"result": {
+        "organic": [{"link": "https://www.tiny.ai/", "title": "Free Tool", "rank": 1}], "ads": [{}], "videos": [{}]}}, 2000))
+    page, cost = competition.page_one("x", 2840)
+    assert page == {"results": [{"domain": "tiny.ai", "url": "https://www.tiny.ai/", "title": "Free Tool", "position": 1,
+                                 "kind": "tool"}], "ads": True, "features": ["videos"]} and cost == 2000
+    assert competition.difficulty(["x"], 2840) == ({}, 0)
