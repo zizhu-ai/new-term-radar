@@ -39,7 +39,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import asks, breakout, config, gsc, new_sites, notify, pains, report, review, revenue, sitemaps, snap, sources, store, usecases
+from . import asks, breakout, config, durable, gsc, new_sites, notify, pains, report, review, revenue, sitemaps, snap, sources, store, usecases
 from .i18n import t
 
 SKIPPABLE = {"x", "hf", "breakout", "sitemaps", "newsites", "revenue", "asks", "gsc", "review", "judge", "usecases", "tutorials"}
@@ -65,7 +65,7 @@ def _finish(args, text: str, subject: str, *, mail: bool | None = None) -> None:
     with open("out/credits.log", "a") as fh:
         fh.write(f"{date.today()} {args.command} goanyapi_credits={cr}\n")
     if args.out:
-        Path(args.out).write_text(text)
+        durable.write_text(Path(args.out), text)
     print(text)
     do_mail = args.mail if mail is None else mail
     if do_mail:
@@ -144,7 +144,7 @@ def cmd_daily(args, cfg: dict, state: Path) -> int:
     summ = run(lambda: store.summary(conn))
     text = report.daily(cfg, lead, blocks, found, rev, summ, extra)
     if args.out:
-        Path(args.out).with_suffix(".json").write_text(json.dumps(
+        durable.write_text(Path(args.out).with_suffix(".json"), json.dumps(
             {"leads": lead, **blocks, "gsc": found, "review": rev, "summary": summ, "keywords": extra["usecases"]}, ensure_ascii=False, indent=1, default=str))
     _finish(args, text, f"New-term radar {date.today()}")
     return 0
@@ -166,7 +166,7 @@ def cmd_keywords(args, cfg: dict, state: Path) -> int:
     uc, text = keyword_table(cfg, state, args.names, repos)
     out = json.dumps(uc, ensure_ascii=False, indent=1, default=str) if args.json else text
     if args.out:
-        Path(args.out).write_text(out)
+        durable.write_text(Path(args.out), out)
     print(out)
     return 0
 
@@ -178,7 +178,7 @@ def cmd_pains(args, cfg: dict) -> int:
     result = pains.run(cfg, keyword, args.extension)
     out = json.dumps(result, ensure_ascii=False, indent=1, default=str) if args.json else report.pains(result)
     if args.out:
-        Path(args.out).write_text(out)
+        durable.write_text(Path(args.out), out)
     print(out)
     return 0
 

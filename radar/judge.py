@@ -59,7 +59,12 @@ def score(rows: list[dict], model: str) -> dict:
         try:
             scores = parse(aisa.chat(model, SYSTEM, user), len(chunk))
         except aisa.AisaError as exc:
-            return {"judged": judged, "error": str(exc)[:160]}
+            # Do not invent scores. Pipeline continues; report shows LLM unavailable.
+            # Without scores there is no reliable 「做」-grade name filter this run.
+            msg = str(exc)
+            if not msg.startswith("LLM unavailable"):
+                msg = f"LLM unavailable: {msg}"
+            return {"judged": judged, "error": msg[:200]}
         for i, s in scores.items():
             chunk[i]["named"] = s
         judged += len(scores)

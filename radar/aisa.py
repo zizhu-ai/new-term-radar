@@ -32,6 +32,11 @@ class AisaError(RuntimeError):
     pass
 
 
+# Alias used by box callers / reports so a MiMo (LLM_API_KEY) failure is not mistaken
+# for a missing AIsa tool-router key. Same exception class.
+LLMError = AisaError
+
+
 def key() -> str:
     """AISA_API_KEY, else the key the AIsa CLI stored at login (~/.aisa)."""
     k = os.environ.get("AISA_API_KEY", "").strip()
@@ -130,7 +135,11 @@ def _llm_chat(system: str, user: str, max_tokens: int) -> str:
                 data = json.load(res)
             return data["choices"][0]["message"]["content"] or ""
         except urllib.error.HTTPError as exc:
-            last = f"LLM HTTP {exc.code}: {exc.read().decode('utf-8','replace')[:200]}"
+            body = exc.read().decode('utf-8', 'replace')[:200]
+            # Permanent auth failures must not burn the retry budget (box: MiMo 401 for days).
+            if exc.code in (401, 403):
+                raise LLMError(f"LLM unavailable (HTTP {exc.code}): {body}") from exc
+            last = f"LLM HTTP {exc.code}: {body}"
             if exc.code != 429 and exc.code < 500:
                 break
         except (http.client.HTTPException, OSError, ValueError) as exc:   # IncompleteRead, reset, timeout, bad JSON
@@ -139,4 +148,4 @@ def _llm_chat(system: str, user: str, max_tokens: int) -> str:
             last = f"LLM unexpected answer {type(exc).__name__}: {exc}"
             break
         print(f"[llm] attempt {attempt + 1}/{LLM_TRIES} failed: {last[:160]}", file=sys.stderr)
-    raise AisaError(last[:300])
+    raise LLMError(f"LLM unavailable: {last[:280]}")
