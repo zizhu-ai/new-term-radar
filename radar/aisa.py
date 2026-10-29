@@ -73,6 +73,13 @@ def _post(url: str, body: dict, timeout: int) -> dict:
 def call(calls: list[dict]) -> tuple[dict[str, dict], int]:
     """Run one batch of tool calls. Returns ({call_id: data}, cost in micro-USD). Calls
     that failed are left out of the dict; only a failed request raises."""
+    blocked = [c for c in calls if "dataforseo" in str(c.get("tool", "")).lower()]
+    if blocked:
+        # Hard lock (2026-10-29, Yoyo): this radar never calls DataForSEO, key or no key.
+        import sys
+        print(f"aisa: DataForSEO locked off, skipped {len(blocked)} call(s): "
+              f"{sorted({c.get('tool') for c in blocked})}", file=sys.stderr)
+        calls = [c for c in calls if c not in blocked]
     if not calls:
         return {}, 0
     if len(calls) > MAX_CALLS:
