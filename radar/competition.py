@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
-from . import aisa, goanyapi, snap
+from . import aisa, goanyapi, page_age, snap
 
 SERP_TOOL = "post_dataforseo_serp_google_organic_live"
 KD_TOOL = "post_dataforseo_labs_google_keyword_overview_live"
@@ -185,5 +185,10 @@ def assess(rows: list[dict], cfg: dict, state: Path) -> tuple[int, list[str]]:
                             "weakest": {k: weakest[k] for k in ("domain", "dr", "position", "url")} if weakest else None}
         if r["decision"] == "prioritize" and r["competition"]["verdict"] == "crowded":
             r["decision"], r["demoted"] = "watch", True
+    if c.get("page_age", True):
+        try:                                 # recorded only (radar/page_age.py): it never stops a run
+            page_age.record(picked, pages, state)
+        except (OSError, ValueError) as exc:
+            errors.append(f"page age: {exc}")
     spent, failed = supply([r for r in picked if r.get("competition")])
     return cost + spent, errors + failed

@@ -2,7 +2,7 @@ import copy
 
 import pytest
 
-from radar import aisa, config, goanyapi, i18n
+from radar import aisa, config, goanyapi, i18n, page_age
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +17,7 @@ def english(monkeypatch):
     def no_paid_calls(*a, **k):       # a key on the machine must never turn a test into a paid call
         raise aisa.AisaError("no network in tests")
     monkeypatch.setattr(aisa, "_post", no_paid_calls)
+    monkeypatch.setattr(page_age, "ask", lambda domain: ("", "none"))      # RDAP: a test that needs it stubs it
     # The page-one check runs only in the tests that set it up, whatever loads the config (the MCP server too).
     monkeypatch.setitem(config.DEFAULTS["competition"], "max_rows", 0)
     monkeypatch.setitem(config.DEFAULTS["asks"], "weekday", None)          # weekly signals stay off unless a test asks
