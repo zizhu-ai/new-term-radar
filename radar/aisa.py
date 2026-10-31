@@ -57,7 +57,24 @@ def _no_key() -> str:
     raise AisaError("no AIsa key: set AISA_API_KEY, or log in with the AIsa CLI (`aisa login`)")
 
 
+SPENT = {"dataforseo_blocked": 0}   # calls refused by the lock this run; DataForSEO spend is always 0
+
+
+def _dataforseo(url: str, body: dict) -> bool:
+    """Whether a request would reach DataForSEO: by URL, or by a tool-router tool name.
+    Chat bodies are not inspected (a judge prompt may mention the word)."""
+    if "dataforseo" in url.lower():
+        return True
+    calls = body.get("calls") if isinstance(body, dict) else None
+    return any("dataforseo" in str((c or {}).get("tool", "")).lower() for c in calls or [])
+
+
 def _post(url: str, body: dict, timeout: int) -> dict:
+    # Hard lock (Yoyo, permanent): nothing reaches DataForSEO, whatever the caller. Checked
+    # before the key is read so "no AIsa key" can never mask a lock violation.
+    if _dataforseo(url, body):
+        SPENT["dataforseo_blocked"] += 1
+        raise AisaError("DataForSEO is locked off in this radar (permanent); request refused")
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={
         "Content-Type": "application/json", "Authorization": f"Bearer {key()}",
         "User-Agent": UA, "x-aisa-source": "new-term-radar"})
@@ -70,6 +87,13 @@ def _post(url: str, body: dict, timeout: int) -> dict:
         raise AisaError(f"{type(exc).__name__}: {exc}") from exc
 
 
+def rest(*args, **kwargs) -> dict:
+    """Upstream's AIsa REST passthrough (8f6c10a) is not taken: it reaches DataForSEO
+    around call(). Always refuses."""
+    SPENT["dataforseo_blocked"] += 1
+    raise AisaError("rest() is disabled: DataForSEO is locked off in this radar (permanent)")
+
+
 def call(calls: list[dict]) -> tuple[dict[str, dict], int]:
     """Run one batch of tool calls. Returns ({call_id: data}, cost in micro-USD). Calls
     that failed are left out of the dict; only a failed request raises."""
@@ -79,6 +103,7 @@ def call(calls: list[dict]) -> tuple[dict[str, dict], int]:
         import sys
         print(f"aisa: DataForSEO locked off, skipped {len(blocked)} call(s): "
               f"{sorted({c.get('tool') for c in blocked})}", file=sys.stderr)
+        SPENT["dataforseo_blocked"] += len(blocked)
         calls = [c for c in calls if c not in blocked]
     if not calls:
         return {}, 0
