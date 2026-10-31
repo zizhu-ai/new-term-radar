@@ -33,6 +33,7 @@ Names lead the report and are kept in state/radar.db for the review.
 """
 from __future__ import annotations
 
+import os
 import argparse
 import json
 import sys
@@ -49,10 +50,24 @@ def run(fn, skip: bool = False) -> dict:
     """One signal failing still leaves a report: its error takes its place."""
     if skip:
         return {"skipped": True}
+    # Wall-clock cap per section (RADAR_SECTION_TIMEOUT s, default 900): urlopen's timeout is
+    # per socket op, so a trickling/stalled 443 peer could otherwise hang the whole run.
+    import signal
+    limit = int(os.environ.get("RADAR_SECTION_TIMEOUT", "900"))
+
+    def _alarm(*_):
+        raise TimeoutError(f"section exceeded {limit}s wall clock")
+    old = signal.signal(signal.SIGALRM, _alarm) if limit > 0 else None
+    if limit > 0:
+        signal.alarm(limit)
     try:
         return fn()
     except Exception as exc:  # noqa: BLE001
         return {"error": f"{type(exc).__name__}: {' '.join(str(exc).split())[:160]}"}
+    finally:
+        if limit > 0:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
 
 
 def _finish(args, text: str, subject: str, *, mail: bool | None = None) -> None:

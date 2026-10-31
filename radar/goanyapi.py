@@ -24,6 +24,10 @@ from . import UA
 BASE = os.environ.get("GOANYAPI_BASE_URL", "https://api.goanyapi.com") + "/api/v1/"
 TIMEOUT = 90
 TRIES = 2
+# Circuit breaker: after this many failed calls in a row the source is treated as down for
+# the rest of the run (fail fast instead of 180 s per remaining keyword). 0 disables.
+BREAKER = int(os.environ.get("GOANYAPI_BREAKER", "3"))
+_FAILS = {"n": 0}
 MICROS_PER_CREDIT = 1000
 
 
@@ -37,10 +41,15 @@ def key() -> str:
 
 def call(path: str, **params) -> tuple[dict, int]:
     """One GET. Returns (data, cost in micro-USD)."""
+    import time
+    if BREAKER and _FAILS["n"] >= BREAKER:
+        raise GoAnyError(f"skipped: GoAnyAPI down ({_FAILS['n']} failures in a row this run)")
     req = urllib.request.Request(BASE + path + "?" + urllib.parse.urlencode(params), headers={
         "authorization": f"Bearer {key()}", "accept": "application/json", "user-agent": UA})
     error = ""
-    for _ in range(TRIES):
+    for attempt in range(TRIES):
+        if attempt:
+            time.sleep(5 * attempt)   # small backoff before the retry
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
                 body = json.load(res)
@@ -52,10 +61,12 @@ def call(path: str, **params) -> tuple[dict, int]:
         except (OSError, ValueError) as exc:
             error = f"{type(exc).__name__}: {exc}"
             continue
+        _FAILS["n"] = 0
         data = body.get("data") or {}
         if body.get("code") != "ok":
             raise GoAnyError(str(body.get("message") or body)[:160])
         return data, int(data.get("costCredits") or data.get("creditsUsed") or 0) * MICROS_PER_CREDIT
+    _FAILS["n"] += 1
     raise GoAnyError(error[:160])
 
 

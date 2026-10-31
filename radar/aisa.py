@@ -127,7 +127,14 @@ def _llm_chat(system: str, user: str, max_tokens: int) -> str:
     on failure, never a raw http.client exception, so callers can degrade gracefully."""
     import http.client
     import time
-    url = os.environ.get("LLM_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/") + "/chat/completions"
+    base = os.environ.get("LLM_BASE_URL", "").strip()
+    if not base:
+        key = os.environ.get("LLM_API_KEY") or os.environ.get("MIMO_API_KEY") or ""
+        if key.startswith("tp-") or key.startswith("ttp-"):
+            base = "https://token-plan-cn.xiaomimimo.com/v1"
+        else:
+            base = "https://api.xiaomimimo.com/v1"  # pay-as-you-go sk- keys
+    url = base.rstrip("/") + "/chat/completions"
     model = os.environ.get("LLM_MODEL", "mimo-v2.6-pro")
     body = json.dumps({"model": model, "temperature": 0, "max_tokens": max(max_tokens * 4, 4000), "messages": [
         {"role": "system", "content": system}, {"role": "user", "content": user}]}).encode()

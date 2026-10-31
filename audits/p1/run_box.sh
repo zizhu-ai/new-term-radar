@@ -3,7 +3,17 @@
 # Prefers X_POSTS_GLOB (merge shards ≤ LOOKBACK_HOURS); falls back to today's single file.
 cd /workspace/new-term-radar || exit 1
 EXTRA="${@:2}"
+if [ -z "${MIMO_API_KEY:-}" ] && [ -f "$HOME/.config/mimo-api-key" ]; then
+  export MIMO_API_KEY="$(cat "$HOME/.config/mimo-api-key")"
+fi
 export LLM_API_KEY="${LLM_API_KEY:-$MIMO_API_KEY}" LLM_MODEL="${LLM_MODEL:-mimo-v2.6-pro}"
+if [ -z "${LLM_BASE_URL:-}" ]; then
+  case "${LLM_API_KEY:-${MIMO_API_KEY:-}}" in
+    tp-*|ttp-*) export LLM_BASE_URL="https://token-plan-cn.xiaomimimo.com/v1" ;;
+    *) export LLM_BASE_URL="https://api.xiaomimimo.com/v1" ;;
+  esac
+fi
+
 if [ -z "${GOANYAPI_API_KEY:-}" ] && [ -f "$HOME/.config/goanyapi-token" ]; then
   export GOANYAPI_API_KEY="$(cat "$HOME/.config/goanyapi-token")"
 fi
