@@ -36,6 +36,13 @@ DEFAULTS = {
               "reddit_queries": ["{k} alternative", "{k} frustrating", '"{k}" "doesn\'t work"', "{k} wish there was"]},
     "tutorials": {"max_leads": 3, "videos": 3, "model": "gpt-4.1-mini"},
     "gsc": {},
+    # ⑨ feeds (ported from upstream 0.6.0, free ones only). civitai: anime checkpoints mostly, off.
+    # rising (GoAnyAPI, 6 credits a seed) is off; add it to "enabled" to run it weekly, 4 seeds at most.
+    "feeds": {"enabled": ["producthunt", "hn", "openrouter", "appstore", "awesome"],
+              "weekly": ["rising"], "weekday": 0, "max_per_feed": 8, "hn_points": 30,
+              "app_genres": [6007, 6008, 6027, 6002],      # Productivity, Photo & Video, Graphics & Design, Utilities
+              "awesome": ["https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md"],
+              "seeds": ["ai generator", "ai detector", "ai converter", "ai maker"]},
 }
 
 

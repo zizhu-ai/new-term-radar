@@ -40,10 +40,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import asks, breakout, config, durable, gsc, new_sites, notify, pains, report, review, revenue, sitemaps, snap, sources, store, usecases
+from . import asks, breakout, config, durable, feeds, gsc, new_sites, notify, pains, report, review, revenue, sitemaps, snap, sources, store, usecases
 from .i18n import t
 
-SKIPPABLE = {"x", "hf", "breakout", "sitemaps", "newsites", "revenue", "asks", "gsc", "review", "judge", "usecases", "tutorials"}
+SKIPPABLE = {"x", "hf", "breakout", "sitemaps", "newsites", "revenue", "asks", "gsc", "review", "judge", "usecases", "tutorials", "feeds"}
 
 
 class SectionTimeout(BaseException):
@@ -84,6 +84,8 @@ def _finish(args, text: str, subject: str, *, mail: bool | None = None) -> None:
     from . import goanyapi
     cr = goanyapi.SPENT["credits"]
     text += f"\n- GoAnyAPI credits this run: {cr} (≈${cr/1000:.3f})\n"
+    from . import aisa
+    text += f"- DataForSEO this run: $0.000, 0 calls (locked off; {aisa.SPENT['dataforseo_blocked']} refused)\n"
     Path("out").mkdir(parents=True, exist_ok=True)
     with open("out/credits.log", "a") as fh:
         fh.write(f"{date.today()} {args.command} goanyapi_credits={cr}\n")
@@ -146,6 +148,8 @@ def cmd_daily(args, cfg: dict, state: Path) -> int:
             args.revenue or date.today().weekday() == cfg["revenue"]["weekday"])),
         "ask": run(lambda: asks.asks(cfg, state), "asks" in args.skip or not (
             args.asks or date.today().weekday() == cfg["asks"]["weekday"])),
+        # ⑨ free launch/model/app lists; daily only (the `sources` fast line is unchanged)
+        "feed": run(lambda: feeds.feeds(cfg, state, weekly=args.feeds), "feeds" in args.skip),
     }
     found = run(lambda: gsc.gsc_new(cfg), "gsc" in args.skip)
     lead, judged = _judged_leads(cfg, blocks)
@@ -248,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--skip", default="", help="comma-separated: " + ",".join(sorted(SKIPPABLE)))
     p.add_argument("--new-sites", action="store_true", help="run the weekly new-site signal today")
     p.add_argument("--revenue", action="store_true", help="run the weekly revenue signal today (needs TRUSTMRR_API_KEY)")
+    p.add_argument("--feeds", action="store_true", help="run the weekly feeds (rising, when enabled) today")
     p.add_argument("--asks", action="store_true", help="run the weekly Reddit asks signal today")
     p.add_argument("--extension", action="append", default=[], metavar="ID", help="for `pains`: a Chrome extension to read the reviews of")
     p.add_argument("--mail", action="store_true", help="mail the report (see radar/notify.py)")

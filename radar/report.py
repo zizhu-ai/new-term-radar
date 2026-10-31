@@ -10,7 +10,7 @@ SHOWN = 20
 OTHER_TERMS = 15
 POSTS_SHOWN = 3   # posts quoted in full per term
 # signal key -> label key, in the order of how early the signal comes
-KINDS = ["x", "hf", "breakout", "sitemap", "newsite", "revenue", "ask", "usecase", "cosearch", "watch"]
+KINDS = ["x", "hf", "breakout", "sitemap", "newsite", "revenue", "ask", "feed", "usecase", "cosearch", "watch"]
 
 
 def leads(cfg: dict, blocks: dict[str, dict]) -> tuple[list[dict], dict]:
@@ -221,6 +221,25 @@ def _review_lines(cfg: dict, rev: dict, summ: dict) -> list[str]:
     return lines
 
 
+def _feed_lines(fd: dict) -> list[str]:
+    if fd.get("skipped"):
+        return []
+    lines = ["", t("feeds_h"), ""]
+    from .feeds import LABEL as WHERE
+    for name, items in fd.get("new", {}).items():
+        if items:
+            shown = "; ".join((f"[{i['name']}]({i['url']})" if i.get("url") else i["name"]) + (f" ({i['where']})" if i.get("where") else "")
+                              for i in items)
+            lines.append(f"- **{WHERE.get(name, name)}**: {_cell(shown)}")
+    if fd.get("first_run"):
+        lines.append(t("feeds_first", feeds=", ".join(WHERE.get(n, n) for n in fd["first_run"])))
+    if fd.get("errors"):
+        lines.append(t("feeds_err", why="; ".join(fd["errors"][:4])))
+    if fd.get("error"):
+        lines.append(t("feeds_err", why=fd["error"]))
+    return lines if len(lines) > 3 else []
+
+
 def _status_lines(b: dict[str, dict], extra: dict[str, dict]) -> list[str]:
     x, hf, bo, sm = b["x"], b["hf"], b["breakout"], b["sitemap"]
     lines = ["", t("status_h"), ""]
@@ -247,6 +266,10 @@ def _status_lines(b: dict[str, dict], extra: dict[str, dict]) -> list[str]:
         lines.append(t("st_site", site=site, state=state))
     if sm.get("error"):
         lines.append(t("st_sitemaps", state=sm["error"]))
+    fd = b.get("feed", {"skipped": True})
+    if not fd.get("skipped"):
+        errs = fd.get("errors") or []
+        lines.append(t("st_feeds", state=fd.get("error") or ("; ".join(errs[:3]) if errs else "ok")))
     for key, label in (("judge", "st_judge"), ("record", "st_record")):
         if extra.get(key, {}).get("error"):
             lines.append(t(label, state=extra[key]["error"]))
@@ -276,6 +299,7 @@ def daily(cfg: dict, lead: list[dict], b: dict[str, dict], gsc: dict, rev: dict,
     lines += _new_site_lines(b.get("newsite", {"skipped": True}), cfg)
     lines += _revenue_lines(b.get("revenue", {"skipped": True}), cfg)
     lines += _asks_lines(b.get("ask", {"skipped": True}), cfg)
+    lines += _feed_lines(b.get("feed", {"skipped": True}))
     lines += _tutorial_lines(extra.get("tutorials", {"skipped": True}))
     lines += _gsc_lines(gsc)
     lines += _review_lines(cfg, rev, summ)
@@ -422,6 +446,10 @@ def sources(cfg: dict, lead: list[dict], b: dict[str, dict], extra: dict[str, di
     for key, label in (("x", "st_x"), ("hf", "st_hf")):
         if b[key].get("error"):
             lines.append(t(label, state=b[key]["error"]))
+    fd = b.get("feed", {"skipped": True})
+    if not fd.get("skipped"):
+        errs = fd.get("errors") or []
+        lines.append(t("st_feeds", state=fd.get("error") or ("; ".join(errs[:3]) if errs else "ok")))
     for key, label in (("judge", "st_judge"), ("record", "st_record")):
         if extra.get(key, {}).get("error"):
             lines.append(t(label, state=extra[key]["error"]))
