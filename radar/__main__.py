@@ -46,6 +46,12 @@ from .i18n import t
 SKIPPABLE = {"x", "hf", "breakout", "sitemaps", "newsites", "revenue", "asks", "gsc", "review", "judge", "usecases", "tutorials"}
 
 
+class SectionTimeout(BaseException):
+    """The per-section wall-clock alarm. Not an OSError (TimeoutError is one, and every
+    `except OSError` in the fetchers would swallow it, so the alarm, which rings once,
+    was lost) and not an Exception, so no broad handler inside a section can eat it."""
+
+
 def run(fn, skip: bool = False) -> dict:
     """One signal failing still leaves a report: its error takes its place."""
     if skip:
@@ -56,12 +62,14 @@ def run(fn, skip: bool = False) -> dict:
     limit = int(os.environ.get("RADAR_SECTION_TIMEOUT", "900"))
 
     def _alarm(*_):
-        raise TimeoutError(f"section exceeded {limit}s wall clock")
+        raise SectionTimeout(f"section exceeded {limit}s wall clock")
     old = signal.signal(signal.SIGALRM, _alarm) if limit > 0 else None
     if limit > 0:
         signal.alarm(limit)
     try:
         return fn()
+    except SectionTimeout as exc:
+        return {"error": f"SectionTimeout: {exc}"}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"{type(exc).__name__}: {' '.join(str(exc).split())[:160]}"}
     finally:
